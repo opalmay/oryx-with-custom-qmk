@@ -277,3 +277,70 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
   }
   return true;
 }
+
+#ifdef POINTING_DEVICE_ENABLE
+// Trackball sends arrow-key taps instead of moving the cursor while the nav
+// layer is active. This runs after the Navigator module in the pointing-device
+// chain (modules -> _kb -> _user), so mouse_report already carries the
+// rotated, CPI-scaled delta.
+#    ifndef NAV_ARROW_LAYER
+#        define NAV_ARROW_LAYER 1
+#    endif
+// Sensor counts the ball must travel to produce one arrow tap. Raise for
+// coarser steps, lower for a more sensitive ball.
+#    ifndef NAV_ARROW_STEP
+#        define NAV_ARROW_STEP 24
+#    endif
+// Upper bound on taps emitted from a single report, so a fast flick cannot
+// stall the scan loop.
+#    ifndef NAV_ARROW_MAX_TAPS
+#        define NAV_ARROW_MAX_TAPS 8
+#    endif
+
+static int16_t nav_arrow_x = 0;
+static int16_t nav_arrow_y = 0;
+
+report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
+    if (!layer_state_is(NAV_ARROW_LAYER)) {
+        nav_arrow_x = 0;
+        nav_arrow_y = 0;
+        return mouse_report;
+    }
+
+    nav_arrow_x += mouse_report.x;
+    nav_arrow_y += mouse_report.y;
+
+    // Lock to the dominant axis so a diagonal roll does not fire both axes.
+    int16_t abs_x = (nav_arrow_x < 0) ? -nav_arrow_x : nav_arrow_x;
+    int16_t abs_y = (nav_arrow_y < 0) ? -nav_arrow_y : nav_arrow_y;
+
+    if (abs_x >= abs_y) {
+        nav_arrow_y = 0;
+        for (uint8_t i = 0; i < NAV_ARROW_MAX_TAPS && nav_arrow_x >= NAV_ARROW_STEP; i++) {
+            nav_arrow_x -= NAV_ARROW_STEP;
+            tap_code(KC_RIGHT);
+        }
+        for (uint8_t i = 0; i < NAV_ARROW_MAX_TAPS && nav_arrow_x <= -NAV_ARROW_STEP; i++) {
+            nav_arrow_x += NAV_ARROW_STEP;
+            tap_code(KC_LEFT);
+        }
+    } else {
+        nav_arrow_x = 0;
+        for (uint8_t i = 0; i < NAV_ARROW_MAX_TAPS && nav_arrow_y >= NAV_ARROW_STEP; i++) {
+            nav_arrow_y -= NAV_ARROW_STEP;
+            tap_code(KC_DOWN);
+        }
+        for (uint8_t i = 0; i < NAV_ARROW_MAX_TAPS && nav_arrow_y <= -NAV_ARROW_STEP; i++) {
+            nav_arrow_y += NAV_ARROW_STEP;
+            tap_code(KC_UP);
+        }
+    }
+
+    // Swallow the motion so the pointer and wheel stay still on this layer.
+    mouse_report.x = 0;
+    mouse_report.y = 0;
+    mouse_report.h = 0;
+    mouse_report.v = 0;
+    return mouse_report;
+}
+#endif
