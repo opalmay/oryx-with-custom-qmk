@@ -16,7 +16,7 @@ enum tap_dance_codes {
   DANCE_1,
 };
 
-#define DUAL_FUNC_0 LT(10, KC_A)
+#define DUAL_FUNC_0 LT(10, KC_U)
 
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   [0] = LAYOUT_voyager(
@@ -36,7 +36,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   [2] = LAYOUT_voyager(
     KC_TRANSPARENT, KC_TRANSPARENT, NAVIGATOR_DEC_CPI,NAVIGATOR_INC_CPI,KC_TRANSPARENT, KC_TRANSPARENT,                                 KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, 
     KC_TRANSPARENT, KC_TRANSPARENT, TO(0),          NAVIGATOR_TURBO,NAVIGATOR_AIM,  TOGGLE_SCROLL,                                  KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, 
-    KC_TRANSPARENT, KC_TRANSPARENT, DRAG_SCROLL,    KC_MS_BTN2,     KC_MS_BTN1,     KC_MS_BTN6,                                     DRAG_SCROLL,    KC_MS_BTN1,     KC_MS_BTN2,     NAVIGATOR_TURBO,KC_TRANSPARENT, KC_TRANSPARENT, 
+    KC_TRANSPARENT, KC_TRANSPARENT, DRAG_SCROLL,    KC_MS_BTN2,     KC_MS_BTN1,     KC_MS_BTN6,                                     NAVIGATOR_TURBO,KC_MS_BTN1,     KC_MS_BTN2,     DRAG_SCROLL,    KC_TRANSPARENT, KC_TRANSPARENT, 
     TO(0),          KC_TRANSPARENT, KC_MS_DBL_CLICK,KC_MS_BTN3,     LSFT(KC_MS_BTN1),KC_MS_BTN7,                                     KC_TRANSPARENT, DRAG_SCROLL,    NAVIGATOR_AIM,  KC_TRANSPARENT, KC_TRANSPARENT, TO(0),          
                                                     KC_TRANSPARENT, KC_TRANSPARENT,                                 KC_TRANSPARENT, KC_TRANSPARENT
   ),
@@ -70,6 +70,7 @@ const uint16_t PROGMEM combo2[] = { KC_U, KC_E, COMBO_END};
 const uint16_t PROGMEM combo3[] = { MT(MOD_LGUI, KC_S), MT(MOD_LCTL, KC_D), COMBO_END};
 const uint16_t PROGMEM combo4[] = { MT(MOD_LALT, KC_A), KC_E, COMBO_END};
 const uint16_t PROGMEM combo5[] = { MT(MOD_LSFT, KC_J), MT(MOD_LSFT, KC_F), COMBO_END};
+const uint16_t PROGMEM combo6[] = { MT(MOD_LSFT, KC_J), MT(MOD_LCTL, KC_K), COMBO_END};
 
 combo_t key_combos[COMBO_COUNT] = {
     COMBO(combo0, KC_ESCAPE),
@@ -78,6 +79,7 @@ combo_t key_combos[COMBO_COUNT] = {
     COMBO(combo3, RALT(KC_S)),
     COMBO(combo4, RALT(KC_A)),
     COMBO(combo5, CW_TOGG),
+    COMBO(combo6, KC_TRANSPARENT),
 };
 
 uint16_t get_tapping_term(uint16_t keycode, keyrecord_t *record) {
