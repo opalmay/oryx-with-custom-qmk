@@ -285,7 +285,7 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 //
 //   Super held        -> the ball scrolls
 //   nav layer active  -> the ball sends arrow-key taps
-//   otherwise         -> the ball moves the pointer as usual
+//   otherwise         -> the ball moves the pointer, scaled by its own speed
 
 // Layer on which the ball sends arrow keys instead of moving the pointer.
 #    ifndef NAV_ARROW_LAYER
@@ -311,10 +311,39 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 #        define NAV_MOD_SCROLL_DIVIDER NAVIGATOR_SCROLL_DIVIDER
 #    endif
 
-static int16_t nav_arrow_x   = 0;
-static int16_t nav_arrow_y   = 0;
-static float   nav_scroll_h  = 0.0f;
-static float   nav_scroll_v  = 0.0f;
+// Automatic aim. Slow ball movement is scaled down for precision, fast
+// movement passes through at full speed, and the gain ramps between the two.
+// Set NAV_AUTO_AIM_DIVIDER to 1.0f to turn this off.
+#    ifndef NAV_AUTO_AIM_DIVIDER
+#        define NAV_AUTO_AIM_DIVIDER 3.0f
+#    endif
+// Smoothed speed, in sensor counts per report, at or below which the full
+// slowdown applies.
+#    ifndef NAV_AUTO_AIM_LOW
+#        define NAV_AUTO_AIM_LOW 1.5f
+#    endif
+// Smoothed speed at or above which no slowdown applies.
+#    ifndef NAV_AUTO_AIM_HIGH
+#        define NAV_AUTO_AIM_HIGH 8.0f
+#    endif
+// Weight of each new sample in the speed estimate, 0 to 1. Lower reacts more
+// slowly and feels steadier.
+#    ifndef NAV_AUTO_AIM_SMOOTHING
+#        define NAV_AUTO_AIM_SMOOTHING 0.08f
+#    endif
+// Layer carrying the module's own NAVIGATOR_AIM and NAVIGATOR_TURBO keys.
+// Automatic aim stands down there so it cannot fight the explicit controls.
+#    ifndef NAV_AUTO_AIM_SUPPRESS_LAYER
+#        define NAV_AUTO_AIM_SUPPRESS_LAYER 2
+#    endif
+
+static int16_t nav_arrow_x  = 0;
+static int16_t nav_arrow_y  = 0;
+static float   nav_scroll_h = 0.0f;
+static float   nav_scroll_v = 0.0f;
+static float   nav_speed    = 0.0f;
+static float   nav_aim_x    = 0.0f;
+static float   nav_aim_y    = 0.0f;
 
 // Turn ball movement into wheel movement, matching the sign conventions and
 // fractional carry of the module's own scroll path.
@@ -397,6 +426,58 @@ static report_mouse_t nav_arrows_from_motion(report_mouse_t mouse_report) {
     return mouse_report;
 }
 
+// Scale pointer movement by how fast the ball is turning.
+static report_mouse_t nav_auto_aim(report_mouse_t mouse_report) {
+    const float slow = 1.0f / NAV_AUTO_AIM_DIVIDER;
+
+    float dx  = (float)mouse_report.x;
+    float dy  = (float)mouse_report.y;
+    float mag = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+
+    // Reports arrive every POINTING_DEVICE_TASK_THROTTLE_MS, faster than the
+    // sensor produces motion, so many carry no movement at all. Feeding those
+    // into the estimate would drag it to zero and pin the gain at full
+    // slowdown, so leave the estimate alone when the ball has not moved.
+    if (mag == 0.0f) {
+        return mouse_report;
+    }
+
+    nav_speed += (mag - nav_speed) * NAV_AUTO_AIM_SMOOTHING;
+
+    float gain;
+    if (nav_speed <= NAV_AUTO_AIM_LOW) {
+        gain = slow;
+    } else if (nav_speed >= NAV_AUTO_AIM_HIGH) {
+        gain = 1.0f;
+    } else {
+        float t = (nav_speed - NAV_AUTO_AIM_LOW) / (NAV_AUTO_AIM_HIGH - NAV_AUTO_AIM_LOW);
+        gain    = slow + t * (1.0f - slow);
+    }
+
+    // Carry the fraction so slow movement is scaled rather than discarded. The
+    // module's own aim divides integers, which rounds a delta of 1 down to 0
+    // and loses it entirely.
+    nav_aim_x += dx * gain;
+    nav_aim_y += dy * gain;
+
+    const float lim   = 32000.0f;
+    float       out_x = nav_aim_x;
+    float       out_y = nav_aim_y;
+    if (out_x > lim) out_x = lim;
+    if (out_x < -lim) out_x = -lim;
+    if (out_y > lim) out_y = lim;
+    if (out_y < -lim) out_y = -lim;
+
+    mouse_xy_report_t send_x = (mouse_xy_report_t)out_x; // truncates toward zero
+    mouse_xy_report_t send_y = (mouse_xy_report_t)out_y;
+    nav_aim_x -= (float)send_x;
+    nav_aim_y -= (float)send_y;
+
+    mouse_report.x = send_x;
+    mouse_report.y = send_y;
+    return mouse_report;
+}
+
 report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
     // The module already turned this report into scroll, through DRAG_SCROLL,
     // TOGGLE_SCROLL or a scroll layer. Leave its output untouched.
@@ -409,6 +490,8 @@ report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
     if (mods & NAV_MOD_SCROLL_MASK) {
         nav_arrow_x = 0;
         nav_arrow_y = 0;
+        nav_aim_x   = 0.0f;
+        nav_aim_y   = 0.0f;
         return nav_scroll_from_motion(mouse_report);
     }
 
@@ -416,11 +499,21 @@ report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
     nav_scroll_v = 0.0f;
 
     if (layer_state_is(NAV_ARROW_LAYER)) {
+        nav_aim_x = 0.0f;
+        nav_aim_y = 0.0f;
         return nav_arrows_from_motion(mouse_report);
     }
 
     nav_arrow_x = 0;
     nav_arrow_y = 0;
-    return mouse_report;
+
+    // The module's explicit AIM and TURBO controls live on this layer.
+    if (layer_state_is(NAV_AUTO_AIM_SUPPRESS_LAYER)) {
+        nav_aim_x = 0.0f;
+        nav_aim_y = 0.0f;
+        return mouse_report;
+    }
+
+    return nav_auto_aim(mouse_report);
 }
 #endif
