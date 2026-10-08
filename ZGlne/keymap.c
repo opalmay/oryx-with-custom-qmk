@@ -279,38 +279,94 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
 }
 
 #ifdef POINTING_DEVICE_ENABLE
-// Trackball sends arrow-key taps instead of moving the cursor while the nav
-// layer is active. This runs after the Navigator module in the pointing-device
-// chain (modules -> _kb -> _user), so mouse_report already carries the
-// rotated, CPI-scaled delta.
+// Custom trackball behavior layered on top of the Navigator module. This runs
+// after the module in the pointing-device chain (modules -> _kb -> _user), so
+// mouse_report already carries the rotated, CPI-scaled delta.
+//
+//   Super held        -> the ball scrolls
+//   nav layer active  -> the ball sends arrow-key taps
+//   otherwise         -> the ball moves the pointer as usual
+
+// Layer on which the ball sends arrow keys instead of moving the pointer.
 #    ifndef NAV_ARROW_LAYER
 #        define NAV_ARROW_LAYER 1
 #    endif
-// Sensor counts the ball must travel to produce one arrow tap. Raise for
-// coarser steps, lower for a more sensitive ball.
+// Sensor counts the ball must travel to produce one arrow tap. Lower is more
+// sensitive.
 #    ifndef NAV_ARROW_STEP
-#        define NAV_ARROW_STEP 24
+#        define NAV_ARROW_STEP 16
 #    endif
 // Upper bound on taps emitted from a single report, so a fast flick cannot
 // stall the scan loop.
 #    ifndef NAV_ARROW_MAX_TAPS
 #        define NAV_ARROW_MAX_TAPS 8
 #    endif
+// Modifiers that turn the ball into a scroll wheel while held.
+#    ifndef NAV_MOD_SCROLL_MASK
+#        define NAV_MOD_SCROLL_MASK MOD_MASK_GUI
+#    endif
+// Sensor counts per scroll notch for the modifier scroll. Follows the module's
+// own scroll speed by default. Higher is less sensitive.
+#    ifndef NAV_MOD_SCROLL_DIVIDER
+#        define NAV_MOD_SCROLL_DIVIDER NAVIGATOR_SCROLL_DIVIDER
+#    endif
 
-static int16_t nav_arrow_x = 0;
-static int16_t nav_arrow_y = 0;
+static int16_t nav_arrow_x   = 0;
+static int16_t nav_arrow_y   = 0;
+static float   nav_scroll_h  = 0.0f;
+static float   nav_scroll_v  = 0.0f;
 
-report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
-    if (!layer_state_is(NAV_ARROW_LAYER)) {
-        nav_arrow_x = 0;
-        nav_arrow_y = 0;
-        return mouse_report;
-    }
+// Turn ball movement into wheel movement, matching the sign conventions and
+// fractional carry of the module's own scroll path.
+static report_mouse_t nav_scroll_from_motion(report_mouse_t mouse_report) {
+#    ifdef POINTING_DEVICE_HIRES_SCROLL_ENABLE
+    const float gain = (float)pointing_device_get_hires_scroll_resolution() / NAV_MOD_SCROLL_DIVIDER;
+#    else
+    const float gain = 1.0f / NAV_MOD_SCROLL_DIVIDER;
+#    endif
 
+    nav_scroll_h += (float)mouse_report.x * gain;
+    nav_scroll_v += (float)mouse_report.y * gain;
+
+#    ifdef WHEEL_EXTENDED_REPORT
+    const float lim = 32000.0f;
+#    else
+    const float lim = 127.0f;
+#    endif
+    float out_h = nav_scroll_h;
+    float out_v = nav_scroll_v;
+    if (out_h > lim) out_h = lim;
+    if (out_h < -lim) out_h = -lim;
+    if (out_v > lim) out_v = lim;
+    if (out_v < -lim) out_v = -lim;
+
+    mouse_hv_report_t send_h = (mouse_hv_report_t)out_h; // truncates toward zero
+    mouse_hv_report_t send_v = (mouse_hv_report_t)out_v;
+    nav_scroll_h -= (float)send_h;
+    nav_scroll_v -= (float)send_v;
+
+#    ifdef NAVIGATOR_SCROLL_INVERT_X
+    mouse_report.h = send_h;
+#    else
+    mouse_report.h = -send_h;
+#    endif
+#    ifdef NAVIGATOR_SCROLL_INVERT_Y
+    mouse_report.v = -send_v;
+#    else
+    mouse_report.v = send_v;
+#    endif
+
+    mouse_report.x = 0;
+    mouse_report.y = 0;
+    return mouse_report;
+}
+
+// Emit arrow-key taps for accumulated ball movement. Locked to the dominant
+// axis so a diagonal roll does not fire both axes.
+static report_mouse_t nav_arrows_from_motion(report_mouse_t mouse_report) {
     nav_arrow_x += mouse_report.x;
     nav_arrow_y += mouse_report.y;
 
-    // Lock to the dominant axis so a diagonal roll does not fire both axes.
     int16_t abs_x = (nav_arrow_x < 0) ? -nav_arrow_x : nav_arrow_x;
     int16_t abs_y = (nav_arrow_y < 0) ? -nav_arrow_y : nav_arrow_y;
 
@@ -336,11 +392,35 @@ report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
         }
     }
 
-    // Swallow the motion so the pointer and wheel stay still on this layer.
     mouse_report.x = 0;
     mouse_report.y = 0;
-    mouse_report.h = 0;
-    mouse_report.v = 0;
+    return mouse_report;
+}
+
+report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
+    // The module already turned this report into scroll, through DRAG_SCROLL,
+    // TOGGLE_SCROLL or a scroll layer. Leave its output untouched.
+    if (mouse_report.h != 0 || mouse_report.v != 0) {
+        return mouse_report;
+    }
+
+    uint8_t mods = get_mods() | get_weak_mods() | get_oneshot_mods();
+
+    if (mods & NAV_MOD_SCROLL_MASK) {
+        nav_arrow_x = 0;
+        nav_arrow_y = 0;
+        return nav_scroll_from_motion(mouse_report);
+    }
+
+    nav_scroll_h = 0.0f;
+    nav_scroll_v = 0.0f;
+
+    if (layer_state_is(NAV_ARROW_LAYER)) {
+        return nav_arrows_from_motion(mouse_report);
+    }
+
+    nav_arrow_x = 0;
+    nav_arrow_y = 0;
     return mouse_report;
 }
 #endif
