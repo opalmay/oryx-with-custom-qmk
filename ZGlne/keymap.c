@@ -60,7 +60,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,                                 KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, 
     KC_LEFT_SHIFT,  KC_A,           KC_S,           KC_D,           KC_F,           KC_G,                                           KC_TRANSPARENT, KC_J,           KC_K,           KC_L,           KC_SCLN,        KC_RIGHT_SHIFT, 
     KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,                                 KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT, 
-                                                    KC_TRANSPARENT, KC_TRANSPARENT,                                 KC_TRANSPARENT, KC_TRANSPARENT
+                                                    KC_SPACE,       KC_TRANSPARENT,                                 KC_TRANSPARENT, KC_TRANSPARENT
   ),
 };
 
@@ -79,6 +79,9 @@ const uint16_t PROGMEM combo3[] = { MT(MOD_LGUI, KC_S), MT(MOD_LCTL, KC_D), COMB
 const uint16_t PROGMEM combo4[] = { MT(MOD_LALT, KC_A), KC_E, COMBO_END};
 const uint16_t PROGMEM combo5[] = { MT(MOD_LSFT, KC_J), MT(MOD_LSFT, KC_F), COMBO_END};
 const uint16_t PROGMEM jk_click_combo[] = { MT(MOD_LSFT, KC_J), MT(MOD_LCTL, KC_K), COMBO_END};
+const uint16_t PROGMEM ui_right_click_combo[] = { KC_U, KC_I, COMBO_END};
+const uint16_t PROGMEM nm_drag_lock_combo[] = { KC_N, KC_M, COMBO_END};
+const uint16_t PROGMEM mcomma_word_lock_combo[] = { KC_M, KC_COMMA, COMBO_END};
 
 combo_t key_combos[COMBO_COUNT] = {
     COMBO(combo0, KC_ESCAPE),
@@ -88,6 +91,9 @@ combo_t key_combos[COMBO_COUNT] = {
     COMBO(combo4, RALT(KC_A)),
     COMBO(combo5, CW_TOGG),
     COMBO(jk_click_combo, MS_BTN1),
+    COMBO(ui_right_click_combo, MS_BTN2),
+    COMBO_ACTION(nm_drag_lock_combo),
+    COMBO_ACTION(mcomma_word_lock_combo),
 };
 
 uint16_t get_tapping_term(uint16_t keycode, keyrecord_t *record) {
@@ -260,7 +266,10 @@ tap_dance_action_t tap_dance_actions[] = {
         [DANCE_2] = ACTION_TAP_DANCE_FN_ADVANCED(NULL, dance_2_finished, dance_2_reset),
 };
 
+static void drag_lock_end_on_key(uint16_t keycode, keyrecord_t *record);
+
 bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+  drag_lock_end_on_key(keycode, record);
   switch (keycode) {
   case QK_MODS ... QK_MODS_MAX:
     // Mouse and consumer keys (volume, media) with modifiers work inconsistently across operating systems,
@@ -449,3 +458,117 @@ report_mouse_t pointing_device_task_user(report_mouse_t mouse_report) {
     return mouse_report;
 }
 #endif
+
+// Drag lock and word lock: combos that leave the left mouse button held, so
+// the ball drags without a finger on a button.
+//
+//   N+M  -> drag lock: plain press and hold
+//   M+,  -> word lock: a click first, so the held press is the second half of
+//           a double click and the drag selects word by word
+//
+// Either combo again, a normal left click, or any other key press lets go.
+// Letting go also copies, so the selection lands in the clipboard. A key that
+// ends the lock still does its own job afterwards.
+
+// Pause between the click and the held press of a word lock. Long enough for
+// the host to see two separate clicks, short enough to count as a double click.
+#ifndef WORD_LOCK_CLICK_GAP_MS
+#    define WORD_LOCK_CLICK_GAP_MS 40
+#endif
+// Shortcut sent when a lock ends.
+#ifndef LOCK_COPY_KEYCODE
+#    define LOCK_COPY_KEYCODE C(KC_C)
+#endif
+// Pause between releasing the button and copying, so the host has settled the
+// selection first.
+#ifndef LOCK_COPY_DELAY_MS
+#    define LOCK_COPY_DELAY_MS 20
+#endif
+
+static bool drag_locked = false;
+
+static void drag_lock_end(void) {
+    drag_locked = false;
+    unregister_code(MS_BTN1);
+    wait_ms(LOCK_COPY_DELAY_MS);
+
+    // Held modifiers would turn the copy into some other shortcut.
+    const uint8_t mods = get_mods();
+    clear_mods();
+    tap_code16(LOCK_COPY_KEYCODE);
+    set_mods(mods);
+    send_keyboard_report();
+}
+
+void process_combo_event(uint16_t combo_index, bool pressed) {
+    // Matched by key list rather than index, so combos added from Oryx cannot
+    // shift them.
+    const uint16_t *keys = key_combos[combo_index].keys;
+    if (!pressed || (keys != nm_drag_lock_combo && keys != mcomma_word_lock_combo)) {
+        return;
+    }
+    if (drag_locked) {
+        drag_lock_end();
+        return;
+    }
+    if (keys == mcomma_word_lock_combo) {
+        tap_code(MS_BTN1);
+        wait_ms(WORD_LOCK_CLICK_GAP_MS);
+    }
+    drag_locked = true;
+    register_code(MS_BTN1);
+}
+
+// Runs before the key is handled, so the copy goes out before a typed key can
+// replace the selection.
+static void drag_lock_end_on_key(uint16_t keycode, keyrecord_t *record) {
+    // A regular left click is left alone here: it releases the button by
+    // itself, and letting go on its press would add a second, unwanted click.
+    if (drag_locked && record->event.pressed && keycode != MS_BTN1) {
+        drag_lock_end();
+    }
+}
+
+void post_process_record_user(uint16_t keycode, keyrecord_t *record) {
+    // A regular left click has just released the button.
+    if (drag_locked && keycode == MS_BTN1 && !record->event.pressed) {
+        drag_lock_end();
+    }
+}
+
+// Plain layer: the layer reached by double tapping the top left thumb-row
+// tap dance, with plain home-row keys in place of home-row mods.
+//
+// It sits above layers 1-4, so while one of them is up it is switched off to
+// keep their keys reachable, and switched back on once they are gone. Keys
+// that move to layer 0 (TO(0)) land back on it too. Double tapping the tap
+// dance again while on it goes back to layer 0.
+#ifndef PLAIN_LAYER
+#    define PLAIN_LAYER 5
+#endif
+
+static bool plain_mode = false;
+
+layer_state_t layer_state_set_user(layer_state_t state) {
+    const layer_state_t plain      = (layer_state_t)1 << PLAIN_LAYER;
+    const layer_state_t upper_mask = (plain - 1) & ~(layer_state_t)1; // layers 1 to PLAIN_LAYER - 1
+
+    if (state == plain) {
+        // layer_move(PLAIN_LAYER) while already on it: leave plain mode.
+        if (plain_mode && layer_state == plain) {
+            plain_mode = false;
+            return 0;
+        }
+        plain_mode = true;
+    }
+    if (!plain_mode) {
+        return state;
+    }
+    return (state & upper_mask) ? (state & ~plain) : (state | plain);
+}
+
+// Combos are defined with layer 0's home-row mod keys, so on the plain layer
+// look them up from layer 0.
+uint8_t combo_ref_from_layer(uint8_t layer) {
+    return layer == PLAIN_LAYER ? 0 : layer;
+}
